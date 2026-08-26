@@ -4,11 +4,12 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
 
 app = FastAPI(
     title="Secure RAG Document Assistant API",
     description="Backend API for a secure document question-answering system.",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 UPLOAD_DIR = Path("uploads")
@@ -17,6 +18,9 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md"}
 CHUNK_SIZE = 700
 CHUNK_OVERLAP = 100
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+embedding_model = None
 
 
 @app.get("/")
@@ -108,6 +112,15 @@ def split_text_into_chunks(text: str) -> list[str]:
     return chunks
 
 
+def get_embedding_model():
+    global embedding_model
+
+    if embedding_model is None:
+        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+
+    return embedding_model
+
+
 @app.get("/documents")
 def list_documents():
     documents = []
@@ -158,4 +171,35 @@ def get_document_chunks(document_id: str):
         "filename": file_path.name,
         "chunk_count": len(chunks),
         "chunks": chunks,
+    }
+
+
+@app.get("/documents/{document_id}/embeddings")
+def get_document_embeddings(document_id: str):
+    file_path = get_document_path(document_id)
+    text = extract_text_from_file(file_path)
+    chunk_texts = split_text_into_chunks(text)
+
+    if not chunk_texts:
+        return {"document_id": document_id, "embeddings": []}
+
+    model = get_embedding_model()
+    vectors = model.encode(chunk_texts, normalize_embeddings=True).tolist()
+
+    embeddings = [
+        {
+            "chunk_id": index,
+            "text": chunk_text,
+            "embedding": vector,
+            "vector_dimension": len(vector),
+        }
+        for index, (chunk_text, vector) in enumerate(zip(chunk_texts, vectors))
+    ]
+
+    return {
+        "document_id": document_id,
+        "filename": file_path.name,
+        "embedding_model": EMBEDDING_MODEL_NAME,
+        "embedding_count": len(embeddings),
+        "embeddings": embeddings,
     }
