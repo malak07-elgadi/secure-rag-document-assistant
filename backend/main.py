@@ -1,12 +1,14 @@
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from pypdf import PdfReader
 
 app = FastAPI(
     title="Secure RAG Document Assistant API",
     description="Backend API for a secure document question-answering system.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 UPLOAD_DIR = Path("uploads")
@@ -66,3 +68,30 @@ def list_documents():
             )
 
     return {"documents": documents}
+
+
+@app.get("/documents/{document_id}/text")
+def read_document_text(document_id: str):
+    matches = list(UPLOAD_DIR.glob(f"{document_id}.*"))
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    file_path = matches[0]
+    extension = file_path.suffix.lower()
+
+    if extension in {".txt", ".md"}:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+
+    elif extension == ".pdf":
+        reader = PdfReader(BytesIO(file_path.read_bytes()))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    else:
+        raise HTTPException(status_code=400, detail="Text extraction is not supported.")
+
+    return {
+        "document_id": document_id,
+        "filename": file_path.name,
+        "text": text,
+    }
