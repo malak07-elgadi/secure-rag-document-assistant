@@ -1,6 +1,6 @@
 from io import BytesIO
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pypdf import PdfReader
@@ -8,13 +8,15 @@ from pypdf import PdfReader
 app = FastAPI(
     title="Secure RAG Document Assistant API",
     description="Backend API for a secure document question-answering system.",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md"}
+CHUNK_SIZE = 700
+CHUNK_OVERLAP = 100
 
 
 @app.get("/")
@@ -52,6 +54,60 @@ async def upload_document(file: UploadFile = File(...)):
     }
 
 
+def get_document_path(document_id: str) -> Path:
+    try:
+        UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID.")
+
+    matches = list(UPLOAD_DIR.glob(f"{document_id}.*"))
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    return matches[0]
+
+
+def extract_text_from_file(file_path: Path) -> str:
+    extension = file_path.suffix.lower()
+
+    if extension in {".txt", ".md"}:
+        return file_path.read_text(encoding="utf-8", errors="replace")
+
+    if extension == ".pdf":
+        reader = PdfReader(BytesIO(file_path.read_bytes()))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    raise HTTPException(status_code=400, detail="Text extraction is not supported.")
+
+
+def split_text_into_chunks(text: str) -> list[str]:
+    clean_text = " ".join(text.split())
+
+    if not clean_text:
+        return []
+
+    chunks = []
+    start = 0
+
+    while start < len(clean_text):
+        end = min(start + CHUNK_SIZE, len(clean_text))
+
+        if end < len(clean_text):
+            last_space = clean_text.rfind(" ", start, end)
+            if last_space > start:
+                end = last_space
+
+        chunks.append(clean_text[start:end].strip())
+
+        if end == len(clean_text):
+            break
+
+        start = end - CHUNK_OVERLAP
+
+    return chunks
+
+
 @app.get("/documents")
 def list_documents():
     documents = []
@@ -72,26 +128,34 @@ def list_documents():
 
 @app.get("/documents/{document_id}/text")
 def read_document_text(document_id: str):
-    matches = list(UPLOAD_DIR.glob(f"{document_id}.*"))
-
-    if not matches:
-        raise HTTPException(status_code=404, detail="Document not found.")
-
-    file_path = matches[0]
-    extension = file_path.suffix.lower()
-
-    if extension in {".txt", ".md"}:
-        text = file_path.read_text(encoding="utf-8", errors="replace")
-
-    elif extension == ".pdf":
-        reader = PdfReader(BytesIO(file_path.read_bytes()))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
-
-    else:
-        raise HTTPException(status_code=400, detail="Text extraction is not supported.")
+    file_path = get_document_path(document_id)
+    text = extract_text_from_file(file_path)
 
     return {
         "document_id": document_id,
         "filename": file_path.name,
         "text": text,
+    }
+
+
+@app.get("/documents/{document_id}/chunks")
+def get_document_chunks(document_id: str):
+    file_path = get_document_path(document_id)
+    text = extract_text_from_file(file_path)
+    chunk_texts = split_text_into_chunks(text)
+
+    chunks = [
+        {
+            "chunk_id": index,
+            "text": chunk_text,
+            "character_count": len(chunk_text),
+        }
+        for index, chunk_text in enumerate(chunk_texts)
+    ]
+
+    return {
+        "document_id": document_id,
+        "filename": file_path.name,
+        "chunk_count": len(chunks),
+        "chunks": chunks,
     }
