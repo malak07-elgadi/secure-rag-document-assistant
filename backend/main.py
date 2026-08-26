@@ -48,3 +48,21 @@ async def upload_document(file: UploadFile = File(...)):
         "stored_filename": saved_filename,
         "message": "Document uploaded successfully.",
     }
+
+
+@app.get("/documents")
+def list_documents():
+    documents = []
+
+    for file_path in UPLOAD_DIR.iterdir():
+        if file_path.is_file():
+            documents.append(
+                {
+                    "document_id": file_path.stem,
+                    "stored_filename": file_path.name,
+                    "file_type": file_path.suffix.lower(),
+                    "size_bytes": file_path.stat().st_size,
+                }
+            )
+
+    return {"documents": documents}
